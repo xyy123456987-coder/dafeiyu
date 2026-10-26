@@ -1,0 +1,9 @@
+# 统一换行：仓库里存 LF，Windows 上检出也保持 LF（避免每次提交整文件 diff）
+* text=auto eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.webp binary
+*.zip binary
+*.tgz binary

@@ -1,0 +1,33 @@
+# 依赖与构建产物
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# 运行期数据（插件只写 E:/AI_Workspace/Data/feiyu-owner/，但防止有人把数据改到这里）
+data/
+*.jsonl
+*.log
+log.jsonl
+digests/
+backup/
+profile.json
+config.json
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
+
+# 临时
+tmp/
+temp/
+*.tmp
+
+# 测试与覆盖率
+coverage/
+.nyc_output/
