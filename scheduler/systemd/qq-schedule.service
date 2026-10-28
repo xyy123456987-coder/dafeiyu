@@ -1,0 +1,6 @@
+[Unit]
+Description=QQ bot cadence scheduler (peak/off-peak/night)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/bin/qq-bot-scheduler
