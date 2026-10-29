@@ -2,13 +2,13 @@
 # ============================================================================
 # qq-bot-scheduler —— 按 DeepSeek 峰谷时段调节 QQ 机器人节奏，并控制上下文大小
 #
-#   · 高峰（工作日 09:00-12:00、14:00-18:00，2 倍价）：1~2 小时看一次群
+#   · 高峰（工作日 09:00-12:00、14:00-18:00，2 倍价）：上班摸鱼，1~2 小时看一次群
+#   · 午休（工作日 12:00-14:00）：更安静，1.5~3 小时
 #   · 闲时（其余时间、周末、节假日）：3~15 分钟随机
 #   · 夜间（默认 23:00-08:00）：1~2 小时
-#   · 自动换会话：只在「本会话确实产生了新的大上下文」且冷却已过时才换（防死循环）
+#   · 自动换会话：只认本次会话的新调用，带冷却，防死循环
 #
-# 用法：
-#   qq-bot-scheduler [auto|status|report|force <mode>|rotate]
+# 用法：qq-bot-scheduler [auto|status|report|force <mode>|rotate]
 # ============================================================================
 export PATH=/opt/node22/bin:/usr/local/bin:/usr/bin:/bin
 export TZ=Asia/Shanghai
@@ -30,6 +30,7 @@ source "$CONF"
 
 QQ_GROUPS=${QQ_GROUPS:-1045372529}
 PEAK_WINDOWS=${PEAK_WINDOWS:-0900-1200,1400-1800}
+LUNCH_WINDOWS=${LUNCH_WINDOWS:-1200-1400}
 NIGHT_WINDOWS=${NIGHT_WINDOWS:-2300-0800}
 HOLIDAYS=${HOLIDAYS:-/etc/qq-bot/holidays.txt}
 MAKEUP_WORKDAYS=${MAKEUP_WORKDAYS:-/etc/qq-bot/workdays.txt}
@@ -58,6 +59,9 @@ resolve_mode() {
   if [[ -f "$HOLIDAYS" ]] && grep -qx "$today" "$HOLIDAYS"; then workday=0; fi
 
   if [[ "$workday" == "1" ]]; then
+    for w in ${LUNCH_WINDOWS//,/ }; do
+      if in_window "$hhmm" "$w"; then echo lunch; return; fi
+    done
     for w in ${PEAK_WINDOWS//,/ }; do
       if in_window "$hhmm" "$w"; then echo peak; return; fi
     done
@@ -71,9 +75,10 @@ resolve_mode() {
 apply_mode() {
   local mode=$1 g min max prob
   case "$mode" in
-    peak)    min=$PEAK_MIN_MS; max=$PEAK_MAX_MS; prob=$PEAK_PROB ;;
+    peak)    min=$PEAK_MIN_MS;  max=$PEAK_MAX_MS;  prob=$PEAK_PROB ;;
+    lunch)   min=$LUNCH_MIN_MS; max=$LUNCH_MAX_MS; prob=$LUNCH_PROB ;;
     night)   min=$NIGHT_MIN_MS; max=$NIGHT_MAX_MS; prob=$NIGHT_PROB ;;
-    offpeak) min=$OFF_MIN_MS;  max=$OFF_MAX_MS;  prob=$OFF_PROB ;;
+    offpeak) min=$OFF_MIN_MS;   max=$OFF_MAX_MS;   prob=$OFF_PROB ;;
     *) echo "未知模式 $mode" >&2; return 1 ;;
   esac
   echo "$mode" > "$STATE"
@@ -98,7 +103,6 @@ apply_mode() {
   curl -s -m 10 -X POST -H "x-console-token: $CT" -H 'content-type: application/json' -d '{"paused":false}' "$API/api/socialV2/activity" > /dev/null
 }
 
-# 只统计「本次会话开始之后」产生的调用，避免拿着上一次会话的旧数字反复触发
 latest_cache_hit_since_session() {
   local mark=0
   [[ -f "$SESSION_MARK" ]] && mark=$(cat "$SESSION_MARK" 2>/dev/null || echo 0)
@@ -110,8 +114,8 @@ latest_cache_hit_since_session() {
       for(const l of s.trim().split("\n")){
         if(!l) continue;
         try{const j=JSON.parse(l);
-          if(j.k !== "turn") continue;              // 跳过 base（累计汇总）等记录
-          if(Number(j.t||0) <= mark*1000) continue; // mark 是秒，j.t 是毫秒
+          if(j.k !== "turn") continue;
+          if(Number(j.t||0) <= mark*1000) continue;
           const h=Number((j.b&&j.b.cacheHit)||0);
           if(h>max) max=h;
         }catch(e){}
@@ -165,7 +169,7 @@ case "$cmd" in
     mode=$(cat "$STATE" 2>/dev/null || echo "未应用")
     echo "时间：$(date '+%F %T')（周$(date +%u)）"
     echo "判定：$(resolve_mode)    当前生效：$mode"
-    echo "高峰窗口：$PEAK_WINDOWS    夜间窗口：$NIGHT_WINDOWS"
+    echo "高峰：$PEAK_WINDOWS   午休：$LUNCH_WINDOWS   夜间：$NIGHT_WINDOWS"
     echo "群：$QQ_GROUPS"
     echo "本会话上下文：$(latest_cache_hit_since_session) tokens（>${ROTATE_AT_CACHE_TOKENS} 换会话）"
     if [[ -n "$CT" ]]; then
@@ -199,18 +203,16 @@ case "$cmd" in
       node -e '
         const fs=require("fs");
         const lines=fs.readFileSync("/opt/qq-bridge/state/token-usage.jsonl","utf8").trim().split("\n").filter(Boolean);
-        const now=Date.now();
         let sum={};
         for(const l of lines){
           try{const j=JSON.parse(l); if(j.k!=="turn") continue;
-            const h=new Date(j.t).getHours();
-            const b=j.b||{};
+            const h=new Date(j.t).getHours(); const b=j.b||{};
             const s=sum[h]||(sum[h]={calls:0,miss:0,hit:0,out:0});
             s.calls++; s.miss+=Number(b.cacheMiss||0); s.hit+=Number(b.cacheHit||0); s.out+=Number(b.output||0);
           }catch(e){}
         }
-        const hours=Object.keys(sum).map(Number).sort((a,b)=>a-b);
-        for(const h of hours) console.log(String(h).padStart(2,"0")+"时", "调用"+sum[h].calls, "缓存"+sum[h].hit, "输出"+sum[h].out);
+        for(const h of Object.keys(sum).map(Number).sort((a,b)=>a-b))
+          console.log(String(h).padStart(2,"0")+"时", "调用"+sum[h].calls, "缓存"+sum[h].hit, "输出"+sum[h].out);
       ' 2>/dev/null
     fi
     exit 0 ;;
@@ -225,4 +227,3 @@ maybe_rotate
 if [[ -f "$LOG" ]] && [[ "$(stat -c %s "$LOG")" -gt 1048576 ]]; then
   tail -1000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 fi
-
